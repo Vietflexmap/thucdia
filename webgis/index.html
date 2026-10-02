@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b3d2e" />
+  <meta name="description" content="Vietflex Field GIS - nền tảng WebGIS thực địa offline-first." />
+  <title>Vietflex Field GIS</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.11.2/dist/maplibre-gl.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">VF</div>
+      <div>
+        <strong>Vietflex Field GIS</strong>
+        <span>Offline-first field workspace</span>
+      </div>
+    </div>
+    <div class="top-status">
+      <span id="networkBadge" class="badge">● Đang kiểm tra mạng</span>
+      <span id="sessionBadge" class="badge muted">Chưa có phiên</span>
+      <button id="syncBtn" class="btn btn-primary">Đồng bộ <span id="syncCount">0</span></button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar left-panel">
+      <section class="panel-section">
+        <div class="section-title"><span>Dự án thực địa</span><button id="newProjectBtn" class="icon-btn" title="Tạo dự án">＋</button></div>
+        <select id="projectSelect" class="control"></select>
+        <div class="project-meta">
+          <span id="projectCrs">EPSG:4326</span>
+          <span id="featureTotal">0 đối tượng</span>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-title"><span>Phiên khảo sát</span><span id="sessionStateDot" class="state-dot"></span></div>
+        <div id="sessionCard" class="session-card empty">
+          <strong id="sessionName">Chưa bắt đầu</strong>
+          <span id="sessionMeta">Tạo phiên để ghi dữ liệu thực địa</span>
+        </div>
+        <div class="button-grid two">
+          <button id="startSessionBtn" class="btn">Bắt đầu</button>
+          <button id="finishSessionBtn" class="btn" disabled>Kết thúc</button>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-title"><span>Thu thập</span><span id="gnssQuality" class="tiny-badge">GNSS —</span></div>
+        <div class="tool-grid">
+          <button data-draw="point" class="tool-btn"><span>●</span>Điểm</button>
+          <button data-draw="line" class="tool-btn"><span>╱</span>Tuyến</button>
+          <button data-draw="polygon" class="tool-btn"><span>⬠</span>Vùng</button>
+          <button id="captureGnssBtn" class="tool-btn"><span>⌖</span>Thu GNSS</button>
+        </div>
+        <div id="drawHint" class="hint">Chọn công cụ để bắt đầu số hóa.</div>
+        <button id="finishDrawBtn" class="btn full hidden">Hoàn tất hình học</button>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-title"><span>Dữ liệu & lớp</span><span id="layerCount" class="tiny-badge">3 lớp</span></div>
+        <label class="layer-row"><input type="checkbox" data-layer-toggle="field-point" checked /><span class="legend point"></span><span>Điểm thực địa</span></label>
+        <label class="layer-row"><input type="checkbox" data-layer-toggle="field-line" checked /><span class="legend line"></span><span>Tuyến khảo sát</span></label>
+        <label class="layer-row"><input type="checkbox" data-layer-toggle="field-fill" checked /><span class="legend polygon"></span><span>Vùng khảo sát</span></label>
+        <div id="externalLayers"></div>
+        <div class="button-grid two compact">
+          <label class="btn file-btn">Nhập GIS<input id="importFile" type="file" accept=".geojson,.json,.kml,.gpx" /></label>
+          <button id="exportBtn" class="btn">Xuất GeoJSON</button>
+          <button id="pmtilesBtn" class="btn">Thêm PMTiles</button>
+          <button id="apiBtn" class="btn">WebGIS API</button>
+        </div>
+      </section>
+    </aside>
+
+    <main class="map-shell">
+      <div id="map"></div>
+      <div class="map-toolbar">
+        <button id="locateBtn" class="map-btn" title="Theo dõi vị trí">⌖</button>
+        <button id="homeBtn" class="map-btn" title="Về toàn cảnh">⌂</button>
+      </div>
+      <div class="map-readout">
+        <span id="coordReadout">Lng — · Lat —</span>
+        <span id="zoomReadout">Z —</span>
+      </div>
+    </main>
+
+    <aside class="sidebar right-panel">
+      <section class="panel-section inspector-head">
+        <div class="section-title"><span>Đối tượng</span><span id="selectedType" class="tiny-badge">—</span></div>
+        <strong id="selectedId">Chưa chọn đối tượng</strong>
+        <span id="selectedMeta" class="muted-text">Nhấp vào đối tượng trên bản đồ để xem thuộc tính.</span>
+      </section>
+
+      <section id="featureForm" class="panel-section hidden">
+        <label class="field-label">Tên</label>
+        <input id="propName" class="control" placeholder="Tên đối tượng" />
+        <label class="field-label">Trạng thái</label>
+        <select id="propStatus" class="control">
+          <option value="new">Mới</option>
+          <option value="verified">Đã kiểm tra</option>
+          <option value="needs_review">Cần kiểm tra</option>
+        </select>
+        <label class="field-label">Ghi chú</label>
+        <textarea id="propNote" class="control textarea" rows="4" placeholder="Ghi chú hiện trường"></textarea>
+        <div class="quality-box">
+          <div><span>QA/QC</span><strong id="qualityFlag">unverified</strong></div>
+          <div><span>Accuracy</span><strong id="featureAccuracy">—</strong></div>
+          <div><span>Sync</span><strong id="featureSync">local</strong></div>
+        </div>
+        <div class="button-grid two">
+          <button id="saveFeatureBtn" class="btn btn-primary">Lưu thuộc tính</button>
+          <button id="deleteFeatureBtn" class="btn danger">Xóa</button>
+        </div>
+      </section>
+
+      <section class="panel-section stats-section">
+        <div class="section-title"><span>Tình trạng workspace</span></div>
+        <div class="stat-grid">
+          <div><strong id="statPoints">0</strong><span>Điểm</span></div>
+          <div><strong id="statLines">0</strong><span>Tuyến</span></div>
+          <div><strong id="statPolygons">0</strong><span>Vùng</span></div>
+          <div><strong id="statPending">0</strong><span>Chờ sync</span></div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div>
+
+  <dialog id="pmtilesDialog" class="dialog">
+    <form method="dialog" id="pmtilesForm">
+      <div class="dialog-head"><strong>Thêm lớp PMTiles</strong><button value="cancel" class="icon-btn">×</button></div>
+      <label class="field-label">URL PMTiles (HTTP Range + CORS)</label>
+      <input id="pmtilesUrl" class="control" type="url" placeholder="https://.../layer.pmtiles" required />
+      <label class="field-label">Loại tile</label>
+      <select id="pmtilesType" class="control">
+        <option value="vector">Vector MVT</option>
+        <option value="raster">Raster</option>
+      </select>
+      <label class="field-label">Source-layer (vector)</label>
+      <input id="pmtilesSourceLayer" class="control" placeholder="Tự dò nếu metadata có vector_layers" />
+      <label class="field-label">Tên lớp</label>
+      <input id="pmtilesName" class="control" placeholder="PMTiles layer" />
+      <div class="dialog-actions">
+        <button value="cancel" class="btn">Hủy</button>
+        <button id="addPmtilesConfirm" value="default" class="btn btn-primary">Thêm lớp</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="apiDialog" class="dialog">
+    <form method="dialog" id="apiForm">
+      <div class="dialog-head"><strong>Kết nối Vietflex WebGIS</strong><button value="cancel" class="icon-btn">×</button></div>
+      <label class="field-label">API base URL</label>
+      <input id="apiBase" class="control" type="url" placeholder="https://api.example.vn/field/v1" />
+      <p class="dialog-note">Bản v0.2 chỉ lưu endpoint và hàng đợi offline. Không gửi dữ liệu nếu chưa có adapter API được xác thực.</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn">Hủy</button>
+        <button id="saveApiBtn" value="default" class="btn btn-primary">Lưu cấu hình</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

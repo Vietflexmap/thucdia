@@ -1,0 +1,191 @@
+'==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': 5, 'circle-color': '#d5a84b', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 },
+  });
+
+  state.map.addLayer({
+    id: 'selection-line', type: 'line', source: 'selection',
+    paint: { 'line-color': '#1d4ed8', 'line-width': 5, 'line-opacity': .75 },
+  });
+  state.map.addLayer({
+    id: 'selection-point', type: 'circle', source: 'selection', filter: ['==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': 10, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': '#1d4ed8', 'circle-stroke-width': 3 },
+  });
+  state.map.addLayer({
+    id: 'gnss-accuracy', type: 'circle', source: 'gnss-position',
+    paint: { 'circle-radius': 13, 'circle-color': '#2b7fff', 'circle-opacity': .12, 'circle-stroke-color': '#2b7fff', 'circle-stroke-width': 1 },
+  });
+  state.map.addLayer({
+    id: 'gnss-dot', type: 'circle', source: 'gnss-position',
+    paint: { 'circle-radius': 6, 'circle-color': '#2b7fff', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 },
+  });
+}
+
+function setDrawMode(mode) {
+  if (!state.currentSession) {
+    showToast('Hãy bắt đầu phiên khảo sát trước khi số hóa.');
+    return;
+  }
+  state.drawMode = mode;
+  state.drawCoords = [];
+  document.querySelectorAll('[data-draw]').forEach(btn => btn.classList.toggle('active', btn.dataset.draw === mode));
+  $('finishDrawBtn').classList.toggle('hidden', mode === 'point');
+  $('drawHint').textContent = mode === 'point'
+    ? 'Nhấp bản đồ để tạo điểm.'
+    : mode === 'line'
+      ? 'Nhấp các đỉnh tuyến; nhấp đúp hoặc bấm “Hoàn tất hình học”.'
+      : 'Nhấp các đỉnh vùng; cần ít nhất 3 đỉnh.';
+  if (mode === 'line' || mode === 'polygon') state.map.doubleClickZoom.disable();
+  updateDraft();
+}
+
+function stopDrawing() {
+  state.drawMode = null;
+  state.drawCoords = [];
+  document.querySelectorAll('[data-draw]').forEach(btn => btn.classList.remove('active'));
+  $('finishDrawBtn').classList.add('hidden');
+  $('drawHint').textContent = 'Chọn công cụ để bắt đầu số hóa.';
+  state.map?.doubleClickZoom.enable();
+  state.map?.getSource('draft-data')?.setData(emptyCollection());
+}
+
+async function handleDrawClick(lngLat) {
+  const coord = [lngLat.lng, lngLat.lat];
+  if (state.drawMode === 'point') {
+    await saveNewFeature({ type: 'Point', coordinates: coord });
+    stopDrawing();
+    return;
+  }
+  state.drawCoords.push(coord);
+  updateDraft();
+}
+
+function updateDraft() {
+  const source = state.map?.getSource('draft-data');
+  if (!source) return;
+  const features = state.drawCoords.map((c, i) => ({
+    type: 'Feature', id: `draft-${i}`, geometry: { type: 'Point', coordinates: c }, properties: {},
+  }));
+  if (state.drawMode === 'line' && state.drawCoords.length >= 2) {
+    features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: state.drawCoords }, properties: {} });
+  }
+  if (state.drawMode === 'polygon' && state.drawCoords.length >= 3) {
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [[...state.drawCoords, state.drawCoords[0]]] },
+      properties: {},
+    });
+  }
+  source.setData({ type: 'FeatureCollection', features });
+}
+
+async function finishDrawing() {
+  if (state.drawMode === 'line') {
+    if (state.drawCoords.length < 2) return showToast('Tuyến cần ít nhất 2 đỉnh.');
+    await saveNewFeature({ type: 'LineString', coordinates: [...state.drawCoords] });
+  } else if (state.drawMode === 'polygon') {
+    if (state.drawCoords.length < 3) return showToast('Vùng cần ít nhất 3 đỉnh.');
+    await saveNewFeature({ type: 'Polygon', coordinates: [[...state.drawCoords, state.drawCoords[0]]] });
+  }
+  stopDrawing();
+}
+
+function startGnss() {
+  if (!navigator.geolocation) return showToast('Trình duyệt không hỗ trợ Geolocation.');
+  if (state.gnssWatchId != null) {
+    navigator.geolocation.clearWatch(state.gnssWatchId);
+    state.gnssWatchId = null;
+    $('locateBtn').classList.remove('active');
+    showToast('Đã dừng theo dõi GNSS.');
+    return;
+  }
+  state.gnssWatchId = navigator.geolocation.watchPosition(
+    position => {
+      state.latestPosition = position;
+      const { longitude, latitude, accuracy } = position.coords;
+      const feature = { type: 'Feature', geometry: { type: 'Point', coordinates: [longitude, latitude] }, properties: { accuracy } };
+      state.map.getSource('gnss-position')?.setData({ type: 'FeatureCollection', features: [feature] });
+      $('gnssQuality').textContent = `GNSS ±${accuracy.toFixed(1)} m`;
+      $('locateBtn').classList.add('active');
+    },
+    error => showToast(`Không lấy được vị trí: ${error.message}`),
+    { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 },
+  );
+}
+
+async function captureGnssPoint() {
+  if (!state.currentSession) return showToast('Hãy bắt đầu phiên khảo sát trước.');
+  if (!state.latestPosition) {
+    startGnss();
+    return showToast('Đang bật GNSS; hãy thu điểm khi đã có vị trí.');
+  }
+  const c = state.latestPosition.coords;
+  const record = await saveNewFeature(
+    { type: 'Point', coordinates: [c.longitude, c.latitude, c.altitude].filter(v => v != null) },
+    { name: `GNSS ${new Date().toLocaleTimeString('vi-VN')}` },
+    { accuracy: c.accuracy, source: 'browser-gnss', qualityFlag: qualityFromAccuracy(c.accuracy) },
+  );
+  if (record) showToast(`Đã thu điểm GNSS ±${c.accuracy.toFixed(1)} m.`);
+}
+
+function parseCoordinateText(text) {
+  return text.trim().split(/\s+/).map(item => item.split(',').slice(0, 3).map(Number)).filter(c => Number.isFinite(c[0]) && Number.isFinite(c[1]));
+}
+
+function kmlToFeatures(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  const out = [];
+  for (const placemark of doc.querySelectorAll('Placemark')) {
+    const name = placemark.querySelector('name')?.textContent?.trim() || 'KML feature';
+    const point = placemark.querySelector('Point > coordinates');
+    const line = placemark.querySelector('LineString > coordinates');
+    const ring = placemark.querySelector('Polygon outerBoundaryIs LinearRing coordinates');
+    if (point) {
+      const c = parseCoordinateText(point.textContent || '')[0];
+      if (c) out.push({ geometry: { type: 'Point', coordinates: c }, properties: { name } });
+    } else if (line) {
+      const coordinates = parseCoordinateText(line.textContent || '');
+      if (coordinates.length >= 2) out.push({ geometry: { type: 'LineString', coordinates }, properties: { name } });
+    } else if (ring) {
+      const coordinates = parseCoordinateText(ring.textContent || '');
+      if (coordinates.length >= 4) out.push({ geometry: { type: 'Polygon', coordinates: [coordinates] }, properties: { name } });
+    }
+  }
+  return out;
+}
+
+function gpxToFeatures(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  const out = [];
+  for (const wpt of doc.querySelectorAll('wpt')) {
+    const lon = Number(wpt.getAttribute('lon'));
+    const lat = Number(wpt.getAttribute('lat'));
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+    const name = wpt.querySelector('name')?.textContent?.trim() || 'GPX waypoint';
+    out.push({ geometry: { type: 'Point', coordinates: [lon, lat] }, properties: { name } });
+  }
+  for (const seg of doc.querySelectorAll('trkseg')) {
+    const coordinates = [...seg.querySelectorAll('trkpt')]
+      .map(p => [Number(p.getAttribute('lon')), Number(p.getAttribute('lat'))])
+      .filter(c => Number.isFinite(c[0]) && Number.isFinite(c[1]));
+    if (coordinates.length >= 2) out.push({ geometry: { type: 'LineString', coordinates }, properties: { name: 'GPX track' } });
+  }
+  return out;
+}
+
+function normalizeGeoJson(json) {
+  const features = json.type === 'FeatureCollection' ? json.features : json.type === 'Feature' ? [json] : [{ type: 'Feature', geometry: json, properties: {} }];
+  return features
+    .filter(f => f?.geometry && ['Point', 'LineString', 'Polygon'].includes(f.geometry.type))
+    .map(f => ({ geometry: f.geometry, properties: f.properties || {} }));
+}
+
+async function importFile(file) {
+  const text = await file.text();
+  let imported = [];
+  const lower = file.name.toLowerCase();
+  try {
+    if (lower.endsWith('.kml')) imported = kmlToFeatures(text);
+    else if (lower.endsWith('.gpx')) imported = gpxToFeatures(text);
+    else imported = normalizeGeoJson(JSON.parse(text));
+  } catch (error) {
+ 
