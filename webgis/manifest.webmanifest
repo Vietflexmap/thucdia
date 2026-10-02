@@ -1,0 +1,13 @@
+{
+  "name": "Vietflex Field GIS",
+  "short_name": "Vietflex Field",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eef3f0",
+  "theme_color": "#0b3d2e",
+  "description": "Offline-first WebGIS workspace for field survey and Vietflex WebGIS synchronization.",
+  "icons": [
+    {"src": "./icon.svg", "sizes": "128x128", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}
