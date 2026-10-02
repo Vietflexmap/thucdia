@@ -21,9 +21,12 @@ jobs:
           set -euo pipefail
           test -f source_bundle.part1 || exit 0
           cat source_bundle.part1 source_bundle.part2 source_bundle.part3 source_bundle.part4 source_bundle.part5 > source_bundle.tar.gz
-          tar -xzf source_bundle.tar.gz --strip-components=1
+          rm -rf _source
+          mkdir _source
+          tar -xzf source_bundle.tar.gz -C _source --strip-components=1
+          rsync -a --exclude='.github/' _source/ ./
+          rm -rf _source
           rm -f source_bundle.part1 source_bundle.part2 source_bundle.part3 source_bundle.part4 source_bundle.part5 source_bundle.tar.gz
-          rm -f .github/workflows/unpack-source.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
