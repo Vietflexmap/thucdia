@@ -25,6 +25,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Build and validate WebGIS runtime
+        run: |
+          cat webgis/src/app.part-* > webgis/app.js
+          echo "742a816db91339cdac6cd5386eeeb32f41e9e139d475fd63913d1754b8a5eeaf  webgis/app.js" | sha256sum -c -
+          cp webgis/app.js /tmp/vietflex-fieldgis.mjs
+          node --check /tmp/vietflex-fieldgis.mjs
+          node --check webgis/sw.js
+          python -m json.tool webgis/manifest.webmanifest > /dev/null
+          rm -rf webgis/src
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
