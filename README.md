@@ -1,36 +1,66 @@
 # Vietflex Thực địa
 
-Ứng dụng GIS thực địa mã nguồn mở theo kiến trúc clean-room, được thiết kế lại từ yêu cầu nghiệp vụ và hành vi quan sát được của DVTmap.apk.
+Ứng dụng GIS thực địa Flutter, viết lại theo mô hình **clean-room** từ yêu cầu nghiệp vụ và hành vi quan sát được của `DVTmap.apk`. Mã trong repository này không phải mã Dart trích xuất từ APK.
 
-## Mục tiêu
+## Mục tiêu v0.1
 
-- Offline-first cho Android khi đi thực địa.
-- Ghi waypoint, track GNSS, ảnh hiện trường và thuộc tính.
-- Đo khoảng cách, diện tích, phương vị.
-- Làm việc với WGS84 và VN-2000.
-- Import/export GeoJSON, KML, GPX; chuẩn bị adapter MBTiles/PMTiles.
-- Dữ liệu có ID ổn định, timestamp, accuracy và metadata để đồng bộ về WebGIS.
+- GNSS thời gian thực, hiển thị accuracy/speed/heading.
+- Waypoint từ vị trí GPS hoặc long-press trên bản đồ.
+- Ghi GPS track có lọc theo ngưỡng độ chính xác.
+- Ảnh hiện trường được lưu cùng GNSS/time/heading.
+- Đo khoảng cách, diện tích và phương vị.
+- WGS84 + bước chiếu VN-2000/TM-3 theo kinh tuyến trục cấu hình.
+- SQLite local, chạy được khi mất mạng đối với dữ liệu nghiệp vụ.
+- Nền bản đồ online OSM/Google và **offline MBTiles/PMTiles raster**.
+- Import waypoint GeoJSON/KML/GPX; export Waypoint GeoJSON và Track GPX.
 
-## Nguyên tắc clean-room
+## Kiến trúc
 
-Repository này không chứa mã nguồn trích xuất từ APK đóng. Kiến trúc và mã được viết lại độc lập dựa trên chức năng, định dạng dữ liệu, tài nguyên mã nguồn mở và yêu cầu nghiệp vụ thực địa.
-
-## Kiến trúc dự kiến
-
-```
+```text
 lib/
-  core/       # CRS, VN-2000, cấu hình bản đồ
-  data/       # model dữ liệu thực địa
-  services/   # GNSS, lưu trữ, track, import/export
-  features/   # map, waypoint, media, coordinate, settings
+├─ core/        # theme, basemap config, projection VN-2000
+├─ data/        # domain models, enum, application state
+├─ services/    # GNSS, SQLite, track, photo, import/export, offline maps
+└─ features/    # map, coordinates, media, waypoint, track, settings
 ```
 
-## Lộ trình
+Nguyên tắc chính: **field data độc lập map engine**. Waypoint/track/photo được lưu theo model riêng; MBTiles/PMTiles chỉ là adapter nền bản đồ. Cách này giúp sau này thay `flutter_map` bằng MapLibre, thêm VFM, hoặc đồng bộ WebGIS mà không thay schema dữ liệu thực địa.
 
-1. Core field GIS: Map + GNSS + waypoint + track + measurement.
-2. Offline basemap: MBTiles/PMTiles.
-3. Media: ảnh có GNSS/heading/time.
-4. Import/export và đồng bộ WebGIS.
-5. QA/QC thực địa, form schema, phân quyền và audit.
+## Khởi tạo platform Android
 
-License: MIT.
+Repository tập trung vào source nghiệp vụ. Trên máy có Flutter stable:
+
+```bash
+flutter create . --platforms=android --org com.vietflexmap --project-name vietflex_thucdia
+flutter pub get
+flutter run
+```
+
+Sau khi `flutter create`, bảo đảm Android manifest có quyền `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `CAMERA`, `INTERNET` như file mẫu trong repo.
+
+## Quy trình thực địa đề xuất
+
+1. Chuẩn bị MBTiles/PMTiles cho khu vực khảo sát.
+2. Chọn ngưỡng accuracy phù hợp thiết bị/môi trường.
+3. Ghi waypoint/track/photo trong một phiên khảo sát.
+4. Kiểm tra QA/QC tại chỗ: accuracy, số điểm, chiều dài/diện tích.
+5. Export GeoJSON/GPX hoặc đồng bộ về WebGIS.
+
+## VN-2000
+
+`core/vn2000.dart` hiện triển khai **bước chiếu Transverse Mercator** trên ellipsoid WGS84 với `k0=0.9999` và kinh tuyến trục cấu hình. Để dùng cho công việc địa chính yêu cầu độ chính xác pháp lý, cần thêm phép chuyển datum WGS84 ↔ VN-2000 bằng bộ tham số được phê duyệt cho quy trình nghiệp vụ tương ứng.
+
+## DVTmap compatibility map
+
+APK tham chiếu cho thấy các nhóm chức năng: `Map`, `Waypoint`, `GPS Track`, `FieldPhoto`, `Measurement`, `Navigation`, `Coordinates`, `Settings`, `VN2000`, `MBTiles`, import `GeoJSON/KML/GPX/MBTiles`. Xem `docs/APK_ANALYSIS.md`.
+
+## Roadmap
+
+- v0.2: session/project khảo sát, form schema, thuộc tính động, QA/QC.
+- v0.3: PMTiles vector/MVT, VFM layer adapter, cache vùng chọn.
+- v0.4: đồng bộ WebGIS, conflict resolution, audit trail.
+- v0.5: RTK/NMEA/Bluetooth GNSS, geofence, survey workflow.
+
+## License
+
+MIT.
