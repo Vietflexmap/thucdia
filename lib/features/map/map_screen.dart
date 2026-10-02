@@ -33,7 +33,9 @@ class _MapScreenState extends State<MapScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {\n        context.read<AppState>().startGpsWatch();\n      }
+      if (mounted) {
+        context.read<AppState>().startGpsWatch();
+      }
     });
   }
 
@@ -92,7 +94,9 @@ class _MapScreenState extends State<MapScreen> {
                       );
                     }
                   } catch (e) {
-                    if (context.mounted) {\n                      _showError(context, 'Không mở được bản đồ offline: $e');\n                    }
+                    if (context.mounted) {
+                      _showError(context, 'Không mở được bản đồ offline: $e');
+                    }
                   }
                 },
                 icon: Icon(state.offlineBasemap == null ? Icons.offline_pin_outlined : Icons.offline_pin),
