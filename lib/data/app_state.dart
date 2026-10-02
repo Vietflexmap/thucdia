@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../services/exchange_service.dart';
+import '../services/gnss_broker.dart';
 import '../services/location_service.dart';
 import '../services/offline_map_catalog_service.dart';
 import '../services/photo_service.dart';
@@ -16,7 +17,8 @@ import 'models.dart';
 
 class AppState extends ChangeNotifier {
   AppState() {
-    trackService = TrackService(storage, location);
+    gnss = GnssBroker(location);
+    trackService = TrackService(storage, gnss);
     photoService = PhotoService(storage, location);
   }
 
@@ -24,6 +26,7 @@ class AppState extends ChangeNotifier {
   final location = LocationService();
   final exchange = ExchangeService();
   final offlineMaps = OfflineMapCatalogService();
+  late final GnssBroker gnss;
   late final TrackService trackService;
   late final PhotoService photoService;
   final Uuid _uuid = const Uuid();
@@ -74,16 +77,17 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> startGpsWatch() async {
-    if (!await location.ensureReady()) return;
+    if (!await gnss.start(distanceFilter: 1)) return;
     await _positionSubscription?.cancel();
-    _positionSubscription = location.positionStream(distanceFilter: 1).listen((position) {
+    _positionSubscription = gnss.stream.listen((position) {
       currentPosition = position;
       notifyListeners();
     });
+    currentPosition = gnss.latest ?? currentPosition;
   }
 
   Future<WaypointModel> addWaypointFromCurrentLocation({String? name}) async {
-    final position = currentPosition ?? await location.getCurrentPosition();
+    final position = currentPosition ?? gnss.latest ?? await location.getCurrentPosition();
     return addWaypoint(
       latitude: position.latitude,
       longitude: position.longitude,
@@ -151,7 +155,6 @@ class AppState extends ChangeNotifier {
     return photo;
   }
 
-
   Future<int> importWaypoints() async {
     final imported = await exchange.importWaypoints();
     for (final waypoint in imported) {
@@ -168,7 +171,6 @@ class AppState extends ChangeNotifier {
   Future<String> exportWaypoints() => exchange.exportWaypointsGeoJson(waypoints);
 
   Future<String> exportTrack(GpsTrackModel track) => exchange.exportTrackGpx(track);
-
 
   Future<MapLayerModel?> importOfflineBasemap() async {
     final layer = await offlineMaps.importContainer();
@@ -219,8 +221,9 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
-    _positionSubscription?.cancel();
-    trackService.dispose();
+    unawaited(_positionSubscription?.cancel());
+    unawaited(trackService.dispose());
+    unawaited(gnss.dispose());
     super.dispose();
   }
 }
