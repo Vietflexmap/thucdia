@@ -43,7 +43,7 @@ class TrackService {
         accuracy: position.accuracy,
         speed: position.speed,
         heading: position.heading,
-        recordedAt: position.timestamp ?? DateTime.now(),
+        recordedAt: position.timestamp,
       );
       final points = [..._active!.points];
       var distance = _active!.totalDistanceMeters;
