@@ -1,65 +1,148 @@
-# Vietflex Thực địa
+# Vietflex Field GIS
 
-Ứng dụng GIS thực địa Flutter, viết lại theo mô hình **clean-room** từ yêu cầu nghiệp vụ và hành vi quan sát được của `DVTmap.apk`. Mã trong repository này không phải mã Dart trích xuất từ APK.
+**Vietflex Field GIS** là nền tảng GIS thực địa offline-first, phát triển theo clean-room architecture từ yêu cầu nghiệp vụ và hành vi quan sát được của ứng dụng tham chiếu. Repository không chứa mã Dart trích xuất từ APK.
 
-## Mục tiêu v0.1
+- **Mobile runtime:** Flutter + SQLite + GNSS + MBTiles/PMTiles raster.
+- **WebGIS runtime:** MapLibre GL JS + PMTiles + IndexedDB + PWA.
+- **Domain contract:** Project → Survey Session → Feature → Attachment → Sync Queue.
+- **License:** MIT.
 
-- GNSS thời gian thực, hiển thị accuracy/speed/heading.
-- Waypoint từ vị trí GPS hoặc long-press trên bản đồ.
-- Ghi GPS track có lọc theo ngưỡng độ chính xác.
-- Ảnh hiện trường được lưu cùng GNSS/time/heading.
-- Đo khoảng cách, diện tích và phương vị.
-- WGS84 + bước chiếu VN-2000/TM-3 theo kinh tuyến trục cấu hình.
-- SQLite local, chạy được khi mất mạng đối với dữ liệu nghiệp vụ.
-- Nền bản đồ online OSM/Google và **offline MBTiles/PMTiles raster**.
-- Import waypoint GeoJSON/KML/GPX; export Waypoint GeoJSON và Track GPX.
+## WebGIS
 
-## Kiến trúc
+Sau khi GitHub Pages được triển khai từ `main`:
+
+**https://vietflexmap.github.io/thucdia/**
+
+Source web nằm trong [`webgis/`](webgis/). WebGIS v0.2 có Project/Survey Session, số hóa Point/Line/Polygon, GNSS trình duyệt, IndexedDB offline workspace, import GeoJSON/KML/GPX, export GeoJSON, raster/vector PMTiles, layer visibility, QA metadata cơ bản và persistent sync queue.
+
+> v0.2 không giả lập thành công đồng bộ server. Nếu chưa có authenticated API adapter, hàng đợi vẫn giữ trạng thái `pending`.
+
+## Kiến trúc v0.2
 
 ```text
-lib/
-├─ core/        # theme, basemap config, projection VN-2000
-├─ data/        # domain models, enum, application state
-├─ services/    # GNSS, SQLite, track, photo, import/export, offline maps
-└─ features/    # map, coordinates, media, waypoint, track, settings
+                         VIETFLEX FIELD GIS
+                                │
+                ┌───────────────┴───────────────┐
+                │                               │
+          Flutter Mobile                   Field WebGIS
+                │                               │
+         GNSS / Camera                    MapLibre / PMTiles
+                │                               │
+            GnssBroker                    IndexedDB / PWA
+                │                               │
+       SQLite schema v2                        │
+                └───────────────┬───────────────┘
+                                │
+                         Domain Contract
+                                │
+             Project → Session → FeatureRecord
+                                │
+                revision / QA / syncState
+                                │
+                         Sync Queue v0.3
+                                │
+                        Vietflex WebGIS
+                                │
+                         VFM snapshot
 ```
 
-Nguyên tắc chính: **field data độc lập map engine**. Waypoint/track/photo được lưu theo model riêng; MBTiles/PMTiles chỉ là adapter nền bản đồ. Cách này giúp sau này thay `flutter_map` bằng MapLibre, thêm VFM, hoặc đồng bộ WebGIS mà không thay schema dữ liệu thực địa.
+Chi tiết: [`docs/FIELD_GIS_PLATFORM.md`](docs/FIELD_GIS_PLATFORM.md).
 
-## Khởi tạo platform Android
+## Nâng cấp lõi từ v0.1
 
-Repository tập trung vào source nghiệp vụ. Trên máy có Flutter stable:
+### Một GNSS stream dùng chung
+
+`GnssBroker` thay cho việc AppState và TrackService tự mở hai native location streams độc lập.
+
+```text
+Geolocator → GnssBroker → Map / Track / future QA / media
+```
+
+### Track recorder append-oriented
+
+Track points được xử lý tuần tự, chỉ tính khoảng cách từ điểm được chấp nhận gần nhất và ghi point + summary trong transaction. Điều này loại bỏ việc copy toàn bộ danh sách track ở mỗi GNSS sample của v0.1 và tránh callback SQLite chồng nhau.
+
+### SQLite schema v2
+
+Bổ sung migration và các bảng:
+
+- `projects`
+- `survey_sessions`
+- `field_features`
+- `attachments`
+- `sync_queue`
+
+Các bảng waypoint/track/photo v0.1 vẫn được giữ để tương thích dữ liệu cũ trong giai đoạn chuyển đổi.
+
+## Domain dữ liệu ổn định
+
+`FeatureRecord` không phụ thuộc map engine:
+
+```text
+id
+projectId
+sessionId
+layerId
+geometry / geometryType
+properties
+accuracy
+source
+qualityFlag
+revision
+syncState
+createdAt / updatedAt / deletedAt
+```
+
+WGS84 là representation quan sát gốc. VN-2000 được xem là pipeline datum transformation + projection riêng; mã hiện tại chưa được tuyên bố là chuyển đổi địa chính pháp lý đầy đủ.
+
+## Chạy Flutter
 
 ```bash
 flutter create . --platforms=android --org com.vietflexmap --project-name vietflex_thucdia
 flutter pub get
+flutter test
 flutter run
 ```
 
-Sau khi `flutter create`, bảo đảm Android manifest có quyền `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `CAMERA`, `INTERNET` như file mẫu trong repo.
+## Chạy WebGIS local
 
-## Quy trình thực địa đề xuất
+Source runtime lớn được lưu theo các fragment byte-for-byte trong `webgis/src/`. Ghép trước khi chạy:
 
-1. Chuẩn bị MBTiles/PMTiles cho khu vực khảo sát.
-2. Chọn ngưỡng accuracy phù hợp thiết bị/môi trường.
-3. Ghi waypoint/track/photo trong một phiên khảo sát.
-4. Kiểm tra QA/QC tại chỗ: accuracy, số điểm, chiều dài/diện tích.
-5. Export GeoJSON/GPX hoặc đồng bộ về WebGIS.
+```bash
+cat webgis/src/app.part-* > webgis/app.js
+python -m http.server 8080 --directory webgis
+```
 
-## VN-2000
+Mở `http://localhost:8080`.
 
-`core/vn2000.dart` hiện triển khai **bước chiếu Transverse Mercator** trên ellipsoid WGS84 với `k0=0.9999` và kinh tuyến trục cấu hình. Để dùng cho công việc địa chính yêu cầu độ chính xác pháp lý, cần thêm phép chuyển datum WGS84 ↔ VN-2000 bằng bộ tham số được phê duyệt cho quy trình nghiệp vụ tương ứng.
+## PMTiles
 
-## DVTmap compatibility map
+WebGIS dùng PMTiles protocol trực tiếp với MapLibre. Production endpoint cần HTTP Range + CORS. Vector PMTiles cần `source-layer`. Xem [`docs/WEBGIS.md`](docs/WEBGIS.md).
 
-APK tham chiếu cho thấy các nhóm chức năng: `Map`, `Waypoint`, `GPS Track`, `FieldPhoto`, `Measurement`, `Navigation`, `Coordinates`, `Settings`, `VN2000`, `MBTiles`, import `GeoJSON/KML/GPX/MBTiles`. Xem `docs/APK_ANALYSIS.md`.
+## CI / chất lượng
+
+GitHub Actions chạy:
+
+```text
+dart format
+→ flutter analyze
+→ flutter test
+→ flutter build apk --debug
+→ upload APK artifact
+```
+
+GitHub Pages workflow ghép và xác minh checksum runtime WebGIS, kiểm tra cú pháp JS/manifest rồi triển khai `webgis/` độc lập với Flutter build.
 
 ## Roadmap
 
-- v0.2: session/project khảo sát, form schema, thuộc tính động, QA/QC.
-- v0.3: PMTiles vector/MVT, VFM layer adapter, cache vùng chọn.
-- v0.4: đồng bộ WebGIS, conflict resolution, audit trail.
-- v0.5: RTK/NMEA/Bluetooth GNSS, geofence, survey workflow.
+- **v0.3:** authenticated WebGIS sync, server revision/conflict resolution, dynamic form schema, attachment SHA-256, persistent PMTiles catalog.
+- **v0.4:** snapping/topology/undo-redo, background tracking + crash recovery, QA/QC rule engine, audit event log.
+- **v0.5:** Bluetooth/USB NMEA GNSS, NTRIP/RTCM, explicit RTK FIX/FLOAT, vertical datum/geoid model.
+- **v1.0:** VFM project package, GeoAI QA/field assistant, workflow chuyên biệt cho đất đai, môi trường, nông nghiệp, hạ tầng và kiểm kê.
+
+## Clean-room note
+
+Thiết kế dựa trên yêu cầu chức năng, hành vi quan sát được và các thành phần mã nguồn mở. Không sao chép implementation đóng từ APK tham chiếu.
 
 ## License
 

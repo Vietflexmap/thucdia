@@ -1,0 +1,226 @@
+ata').setData({
+    type: 'FeatureCollection',
+    features: state.features.map(asGeoJsonFeature),
+  });
+}
+
+async function renderStats() {
+  const counts = { Point: 0, LineString: 0, Polygon: 0 };
+  for (const f of state.features) if (counts[f.geometry.type] != null) counts[f.geometry.type] += 1;
+  const queue = (await dbGetAll('syncQueue')).filter(q => q.state === 'pending' || q.state === 'error');
+  $('statPoints').textContent = counts.Point;
+  $('statLines').textContent = counts.LineString;
+  $('statPolygons').textContent = counts.Polygon;
+  $('statPending').textContent = queue.length;
+  $('syncCount').textContent = queue.length;
+  $('featureTotal').textContent = `${state.features.length} đối tượng`;
+}
+
+async function saveNewFeature(geometry, properties = {}, meta = {}) {
+  const session = state.currentSession || await startSession();
+  if (!session) return null;
+  const type = geometryTypeToEnum(geometry.type);
+  if (!type) {
+    showToast(`Chưa hỗ trợ geometry ${geometry.type}.`);
+    return null;
+  }
+  const now = nowIso();
+  const record = {
+    id: uuid(),
+    projectId: state.currentProject.id,
+    sessionId: session.id,
+    layerId: meta.layerId || layerIdForGeometry(geometry.type),
+    geometryType: type,
+    geometry,
+    properties: {
+      name: properties.name || `${geometry.type} ${state.features.length + 1}`,
+      status: properties.status || 'new',
+      note: properties.note || '',
+      ...properties,
+    },
+    accuracy: meta.accuracy ?? null,
+    source: meta.source || 'web-map',
+    qualityFlag: meta.qualityFlag || qualityFromAccuracy(meta.accuracy),
+    revision: 1,
+    syncState: 'pending',
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: null,
+  };
+  await dbPut('features', record);
+  await enqueueSync('feature', record.id, 'upsert', asGeoJsonFeature(record));
+  state.features.push(record);
+  state.selectedFeature = record;
+  refreshMapData();
+  renderSelection();
+  await renderStats();
+  return record;
+}
+
+async function updateSelectedFeature() {
+  const current = state.selectedFeature;
+  if (!current) return;
+  const updated = {
+    ...current,
+    properties: {
+      ...current.properties,
+      name: $('propName').value.trim() || current.properties.name,
+      status: $('propStatus').value,
+      note: $('propNote').value.trim(),
+    },
+    revision: (current.revision || 1) + 1,
+    syncState: 'pending',
+    updatedAt: nowIso(),
+  };
+  await dbPut('features', updated);
+  await enqueueSync('feature', updated.id, 'upsert', asGeoJsonFeature(updated));
+  const idx = state.features.findIndex(f => f.id === updated.id);
+  if (idx >= 0) state.features[idx] = updated;
+  state.selectedFeature = updated;
+  refreshMapData();
+  renderSelection();
+  await renderStats();
+  showToast('Đã lưu thuộc tính và đưa vào hàng đợi đồng bộ.');
+}
+
+async function deleteSelectedFeature() {
+  const current = state.selectedFeature;
+  if (!current || !confirm('Xóa đối tượng này khỏi workspace?')) return;
+  const tombstone = {
+    ...current,
+    deletedAt: nowIso(),
+    updatedAt: nowIso(),
+    revision: (current.revision || 1) + 1,
+    syncState: 'pending',
+  };
+  await dbPut('features', tombstone);
+  await enqueueSync('feature', current.id, 'delete', { id: current.id, revision: tombstone.revision });
+  state.features = state.features.filter(f => f.id !== current.id);
+  state.selectedFeature = null;
+  refreshMapData();
+  renderSelection();
+  await renderStats();
+  showToast('Đã tạo tombstone xóa; thay đổi đang chờ đồng bộ.');
+}
+
+function renderSelection() {
+  const feature = state.selectedFeature;
+  const panel = document.querySelector('.right-panel');
+  panel.classList.toggle('has-selection', !!feature);
+  $('featureForm').classList.toggle('hidden', !feature);
+  $('selectedType').textContent = feature?.geometry.type || '—';
+  $('selectedId').textContent = feature?.properties?.name || feature?.id || 'Chưa chọn đối tượng';
+  $('selectedMeta').textContent = feature
+    ? `${feature.id} · rev ${feature.revision} · ${new Date(feature.updatedAt).toLocaleString('vi-VN')}`
+    : 'Nhấp vào đối tượng trên bản đồ để xem thuộc tính.';
+  if (!feature) {
+    if (state.map?.getSource('selection')) state.map.getSource('selection').setData(emptyCollection());
+    return;
+  }
+  $('propName').value = feature.properties?.name || '';
+  $('propStatus').value = feature.properties?.status || 'new';
+  $('propNote').value = feature.properties?.note || '';
+  $('qualityFlag').textContent = feature.qualityFlag || 'unverified';
+  $('featureAccuracy').textContent = feature.accuracy == null ? '—' : `±${Number(feature.accuracy).toFixed(2)} m`;
+  $('featureSync').textContent = feature.syncState || 'local';
+  state.map?.getSource('selection')?.setData({ type: 'FeatureCollection', features: [asGeoJsonFeature(feature)] });
+}
+
+function emptyCollection() {
+  return { type: 'FeatureCollection', features: [] };
+}
+
+function initMap() {
+  const style = {
+    version: 8,
+    sources: {
+      osm: {
+        type: 'raster',
+        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        attribution: '© OpenStreetMap contributors',
+        maxzoom: 19,
+      },
+    },
+    layers: [
+      { id: 'background', type: 'background', paint: { 'background-color': '#e7eeea' } },
+      { id: 'osm', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 22 },
+    ],
+  };
+
+  state.map = new maplibregl.Map({
+    container: 'map',
+    style,
+    center: HOME,
+    zoom: 8.6,
+    attributionControl: true,
+    hash: true,
+  });
+  state.map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
+  state.map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right');
+
+  state.map.on('load', () => {
+    addWorkspaceLayers();
+    refreshMapData();
+  });
+
+  state.map.on('mousemove', e => {
+    $('coordReadout').textContent = `Lng ${e.lngLat.lng.toFixed(6)} · Lat ${e.lngLat.lat.toFixed(6)}`;
+  });
+  state.map.on('zoom', () => $('zoomReadout').textContent = `Z ${state.map.getZoom().toFixed(2)}`);
+
+  state.map.on('click', async e => {
+    if (state.drawMode) {
+      await handleDrawClick(e.lngLat);
+      return;
+    }
+    const layers = ['field-point', 'field-line', 'field-fill'];
+    const visibleLayers = layers.filter(id => state.map.getLayer(id));
+    const hits = state.map.queryRenderedFeatures(e.point, { layers: visibleLayers });
+    if (!hits.length) return;
+    const id = String(hits[0].id ?? hits[0].properties?._id ?? '');
+    state.selectedFeature = state.features.find(f => f.id === id) || null;
+    renderSelection();
+  });
+
+  state.map.on('dblclick', e => {
+    if (state.drawMode === 'line' || state.drawMode === 'polygon') {
+      e.preventDefault();
+      finishDrawing();
+    }
+  });
+}
+
+function addWorkspaceLayers() {
+  state.map.addSource('field-data', { type: 'geojson', data: emptyCollection() });
+  state.map.addSource('draft-data', { type: 'geojson', data: emptyCollection() });
+  state.map.addSource('selection', { type: 'geojson', data: emptyCollection() });
+  state.map.addSource('gnss-position', { type: 'geojson', data: emptyCollection() });
+
+  state.map.addLayer({
+    id: 'field-fill', type: 'fill', source: 'field-data', filter: ['==', ['geometry-type'], 'Polygon'],
+    paint: { 'fill-color': '#2a896b', 'fill-opacity': 0.22 },
+  });
+  state.map.addLayer({
+    id: 'field-fill-outline', type: 'line', source: 'field-data', filter: ['==', ['geometry-type'], 'Polygon'],
+    paint: { 'line-color': '#1f6b54', 'line-width': 2 },
+  });
+  state.map.addLayer({
+    id: 'field-line', type: 'line', source: 'field-data', filter: ['==', ['geometry-type'], 'LineString'],
+    paint: { 'line-color': '#b87522', 'line-width': 3 },
+  });
+  state.map.addLayer({
+    id: 'field-point', type: 'circle', source: 'field-data', filter: ['==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': 6, 'circle-color': '#0b5b42', 'circle-stroke-color': '#d7f1e7', 'circle-stroke-width': 2 },
+  });
+
+  state.map.addLayer({
+    id: 'draft-fill', type: 'fill', source: 'draft-data', filter: ['==', ['geometry-type'], 'Polygon'],
+    paint: { 'fill-color': '#d5a84b', 'fill-opacity': 0.18 },
+  });
+  state.map.addLayer({
+    id: 'draft-line', type: 'line', source: 'draft-data',
+    paint: { 'line-color': '#d5a84b', 'line-width': 3, 'line-dasharray': [2, 1.2] },
+  });
+  state.map.addLayer({
+    id: 'draft-point', type: 'circle', source: 'draft-data', filter: [

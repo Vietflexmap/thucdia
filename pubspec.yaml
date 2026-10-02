@@ -1,7 +1,7 @@
 name: vietflex_thucdia
-description: Clean-room offline-first GIS field application for Vietflexmap.
+description: Offline-first Vietflex Field GIS platform for mobile field survey and WebGIS workflows.
 publish_to: "none"
-version: 0.1.0+1
+version: 0.2.0+2
 
 environment:
   sdk: ">=3.5.0 <4.0.0"

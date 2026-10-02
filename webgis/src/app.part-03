@@ -1,0 +1,182 @@
+   console.error(error);
+    return showToast('Không đọc được tệp GIS. Kiểm tra định dạng và geometry.');
+  }
+  if (!imported.length) return showToast('Không tìm thấy Point/LineString/Polygon hợp lệ.');
+  if (!state.currentSession) await startSession(`Import ${file.name}`);
+  let count = 0;
+  for (const item of imported) {
+    const saved = await saveNewFeature(item.geometry, item.properties, { source: `import:${file.name}` });
+    if (saved) count += 1;
+  }
+  showToast(`Đã nhập ${count} đối tượng từ ${file.name}.`);
+}
+
+function downloadJson(filename, value) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/geo+json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportGeoJson() {
+  const collection = { type: 'FeatureCollection', features: state.features.map(asGeoJsonFeature) };
+  downloadJson(`vietflex-field-${new Date().toISOString().slice(0, 10)}.geojson`, collection);
+}
+
+async function addPmtilesLayer() {
+  if (!protocol || !window.pmtiles?.PMTiles) return showToast('PMTiles runtime chưa tải được.');
+  const url = $('pmtilesUrl').value.trim();
+  const type = $('pmtilesType').value;
+  let sourceLayer = $('pmtilesSourceLayer').value.trim();
+  const name = $('pmtilesName').value.trim() || url.split('/').pop() || 'PMTiles';
+  if (!url) return;
+
+  const key = `pm-${Date.now()}`;
+  try {
+    if (type === 'vector' && !sourceLayer) {
+      const archive = new window.pmtiles.PMTiles(url);
+      const metadata = await archive.getMetadata();
+      sourceLayer = metadata?.vector_layers?.[0]?.id || '';
+      if (!sourceLayer) {
+        showToast('Vector PMTiles cần source-layer; hãy nhập tên layer từ metadata.');
+        return;
+      }
+    }
+
+    if (type === 'raster') {
+      state.map.addSource(key, { type: 'raster', url: `pmtiles://${url}`, tileSize: 256 });
+      state.map.addLayer({ id: `${key}-raster`, type: 'raster', source: key });
+      addExternalLayerRow(name, [`${key}-raster`]);
+    } else {
+      state.map.addSource(key, { type: 'vector', url: `pmtiles://${url}` });
+      const ids = [`${key}-fill`, `${key}-line`, `${key}-point`];
+      state.map.addLayer({
+        id: ids[0], type: 'fill', source: key, 'source-layer': sourceLayer,
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': '#7d6daf', 'fill-opacity': .22 },
+      });
+      state.map.addLayer({
+        id: ids[1], type: 'line', source: key, 'source-layer': sourceLayer,
+        filter: ['==', ['geometry-type'], 'LineString'],
+        paint: { 'line-color': '#725ea8', 'line-width': 2.2 },
+      });
+      state.map.addLayer({
+        id: ids[2], type: 'circle', source: key, 'source-layer': sourceLayer,
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: { 'circle-color': '#725ea8', 'circle-radius': 5 },
+      });
+      addExternalLayerRow(`${name} · ${sourceLayer}`, ids);
+    }
+    $('pmtilesDialog').close();
+    showToast(`Đã thêm ${name}.`);
+  } catch (error) {
+    console.error(error);
+    showToast('Không mở được PMTiles. Kiểm tra HTTP Range, CORS, URL và source-layer.');
+  }
+}
+
+function addExternalLayerRow(name, ids) {
+  state.externalLayers.push({ name, ids });
+  const label = document.createElement('label');
+  label.className = 'layer-row';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = true;
+  checkbox.addEventListener('change', () => {
+    for (const id of ids) if (state.map.getLayer(id)) state.map.setLayoutProperty(id, 'visibility', checkbox.checked ? 'visible' : 'none');
+  });
+  const legend = document.createElement('span');
+  legend.className = 'legend polygon';
+  const title = document.createElement('span');
+  title.textContent = name;
+  label.append(checkbox, legend, title);
+  $('externalLayers').appendChild(label);
+  $('layerCount').textContent = `${3 + state.externalLayers.length} lớp`;
+}
+
+async function renderNetwork() {
+  const online = navigator.onLine;
+  $('networkBadge').textContent = online ? '● Online' : '● Offline';
+  $('networkBadge').className = `badge ${online ? 'online' : 'offline'}`;
+}
+
+async function handleSync() {
+  const queue = (await dbGetAll('syncQueue')).filter(q => q.state === 'pending' || q.state === 'error');
+  if (!queue.length) return showToast('Không có thay đổi đang chờ đồng bộ.');
+  const apiBase = await getSetting('apiBase');
+  if (!apiBase) {
+    showToast('Chưa cấu hình WebGIS API; dữ liệu vẫn an toàn trong hàng đợi offline.');
+    $('apiDialog').showModal();
+    return;
+  }
+  showToast(`Đã cấu hình ${apiBase}, nhưng adapter xác thực chưa được bật ở v0.2; chưa gửi ${queue.length} thay đổi.`);
+}
+
+async function initApiDialog() {
+  $('apiBase').value = await getSetting('apiBase', '');
+}
+
+function bindUi() {
+  $('newProjectBtn').addEventListener('click', createProject);
+  $('projectSelect').addEventListener('change', e => switchProject(e.target.value));
+  $('startSessionBtn').addEventListener('click', () => startSession());
+  $('finishSessionBtn').addEventListener('click', finishSession);
+  document.querySelectorAll('[data-draw]').forEach(btn => btn.addEventListener('click', () => setDrawMode(btn.dataset.draw)));
+  $('finishDrawBtn').addEventListener('click', finishDrawing);
+  $('captureGnssBtn').addEventListener('click', captureGnssPoint);
+  $('locateBtn').addEventListener('click', () => {
+    startGnss();
+    if (state.latestPosition) {
+      state.map.easeTo({ center: [state.latestPosition.coords.longitude, state.latestPosition.coords.latitude], zoom: Math.max(state.map.getZoom(), 16) });
+    }
+  });
+  $('homeBtn').addEventListener('click', () => state.map.easeTo({ center: HOME, zoom: 8.6, bearing: 0, pitch: 0 }));
+  $('saveFeatureBtn').addEventListener('click', updateSelectedFeature);
+  $('deleteFeatureBtn').addEventListener('click', deleteSelectedFeature);
+  $('importFile').addEventListener('change', async e => {
+    const file = e.target.files?.[0];
+    if (file) await importFile(file);
+    e.target.value = '';
+  });
+  $('exportBtn').addEventListener('click', exportGeoJson);
+  $('pmtilesBtn').addEventListener('click', () => $('pmtilesDialog').showModal());
+  $('addPmtilesConfirm').addEventListener('click', e => { e.preventDefault(); addPmtilesLayer(); });
+  $('apiBtn').addEventListener('click', async () => { await initApiDialog(); $('apiDialog').showModal(); });
+  $('saveApiBtn').addEventListener('click', async e => {
+    e.preventDefault();
+    await setSetting('apiBase', $('apiBase').value.trim());
+    $('apiDialog').close();
+    showToast('Đã lưu endpoint. Adapter đồng bộ sẽ được kích hoạt ở lớp API tiếp theo.');
+  });
+  $('syncBtn').addEventListener('click', handleSync);
+  document.querySelectorAll('[data-layer-toggle]').forEach(input => input.addEventListener('change', () => {
+    const id = input.dataset.layerToggle;
+    const visible = input.checked ? 'visible' : 'none';
+    if (state.map.getLayer(id)) state.map.setLayoutProperty(id, 'visibility', visible);
+    if (id === 'field-fill' && state.map.getLayer('field-fill-outline')) state.map.setLayoutProperty('field-fill-outline', 'visibility', visible);
+  }));
+  window.addEventListener('online', renderNetwork);
+  window.addEventListener('offline', renderNetwork);
+}
+
+async function bootstrap() {
+  state.db = await openDatabase();
+  await seedWorkspace();
+  bindUi();
+  initMap();
+  await loadProjects();
+  await renderNetwork();
+  await renderStats();
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(error => console.warn('Service worker:', error));
+  }
+}
+
+bootstrap().catch(error => {
+  console.error(error);
+  showToast(`Không khởi tạo được workspace: ${error.message}`);
+});

@@ -33,7 +33,9 @@ class _MapScreenState extends State<MapScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<AppState>().startGpsWatch();
+      if (mounted) {
+        context.read<AppState>().startGpsWatch();
+      }
     });
   }
 
@@ -54,7 +56,12 @@ class _MapScreenState extends State<MapScreen> {
         if (current != null && state.autoFollowGps && current != _lastFollowPoint) {
           _lastFollowPoint = current;
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _mapController.move(current, _mapController.camera.zoom < 15 ? 17 : _mapController.camera.zoom);
+            if (mounted) {
+              _mapController.move(
+                current,
+                _mapController.camera.zoom < 15 ? 17 : _mapController.camera.zoom,
+              );
+            }
           });
         }
 
@@ -92,7 +99,9 @@ class _MapScreenState extends State<MapScreen> {
                       );
                     }
                   } catch (e) {
-                    if (context.mounted) _showError(context, 'Không mở được bản đồ offline: $e');
+                    if (context.mounted) {
+                      _showError(context, 'Không mở được bản đồ offline: $e');
+                    }
                   }
                 },
                 icon: Icon(state.offlineBasemap == null ? Icons.offline_pin_outlined : Icons.offline_pin),

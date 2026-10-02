@@ -1,0 +1,258 @@
+import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.11.2/dist/maplibre-gl.mjs';
+
+const DB_NAME = 'vietflex-fieldgis-v02';
+const DB_VERSION = 1;
+const HOME = [105.97, 10.25];
+
+const $ = id => document.getElementById(id);
+const nowIso = () => new Date().toISOString();
+const uuid = () => globalThis.crypto?.randomUUID?.() || `vf-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const state = {
+  db: null,
+  map: null,
+  projects: [],
+  currentProject: null,
+  currentSession: null,
+  features: [],
+  selectedFeature: null,
+  drawMode: null,
+  drawCoords: [],
+  gnssWatchId: null,
+  latestPosition: null,
+  externalLayers: [],
+};
+
+const protocol = window.pmtiles?.Protocol ? new window.pmtiles.Protocol() : null;
+if (protocol) maplibregl.addProtocol('pmtiles', protocol.tile);
+
+function openDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('sessions')) db.createObjectStore('sessions', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('features')) db.createObjectStore('features', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('syncQueue')) db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
+      if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'key' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function storeRequest(storeName, mode, fn) {
+  return new Promise((resolve, reject) => {
+    const tx = state.db.transaction(storeName, mode);
+    const store = tx.objectStore(storeName);
+    const request = fn(store);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+const dbGetAll = store => storeRequest(store, 'readonly', s => s.getAll());
+const dbGet = (store, key) => storeRequest(store, 'readonly', s => s.get(key));
+const dbPut = (store, value) => storeRequest(store, 'readwrite', s => s.put(value));
+const dbAdd = (store, value) => storeRequest(store, 'readwrite', s => s.add(value));
+const dbDelete = (store, key) => storeRequest(store, 'readwrite', s => s.delete(key));
+
+async function getSetting(key, fallback = null) {
+  const row = await dbGet('settings', key);
+  return row?.value ?? fallback;
+}
+
+async function setSetting(key, value) {
+  await dbPut('settings', { key, value });
+}
+
+function showToast(message) {
+  const toast = $('toast');
+  toast.textContent = message;
+  toast.classList.add('show');
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+function geometryTypeToEnum(type) {
+  return ({ Point: 'point', LineString: 'lineString', Polygon: 'polygon' })[type] || null;
+}
+
+function qualityFromAccuracy(accuracy) {
+  if (accuracy == null || !Number.isFinite(accuracy)) return 'unverified';
+  if (accuracy <= 0.10) return 'high_precision';
+  if (accuracy <= 1) return 'good';
+  if (accuracy <= 5) return 'acceptable';
+  return 'poor_accuracy';
+}
+
+function layerIdForGeometry(type) {
+  if (type === 'Point') return 'field-point';
+  if (type === 'LineString') return 'field-line';
+  return 'field-area';
+}
+
+async function enqueueSync(entityType, entityId, operation, payload) {
+  await dbAdd('syncQueue', {
+    entityType,
+    entityId,
+    operation,
+    payload,
+    state: 'pending',
+    attempts: 0,
+    lastError: null,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  });
+}
+
+async function seedWorkspace() {
+  const projects = await dbGetAll('projects');
+  if (projects.length) return;
+  const now = nowIso();
+  await dbPut('projects', {
+    id: uuid(),
+    name: 'Khảo sát Vietflex',
+    description: 'Workspace Field GIS mặc định',
+    crs: 'EPSG:4326',
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+async function loadProjects() {
+  state.projects = (await dbGetAll('projects')).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const lastProjectId = await getSetting('currentProjectId');
+  state.currentProject = state.projects.find(p => p.id === lastProjectId) || state.projects[0] || null;
+  renderProjects();
+  await loadCurrentSession();
+  await loadFeatures();
+}
+
+function renderProjects() {
+  const select = $('projectSelect');
+  select.innerHTML = '';
+  for (const project of state.projects) {
+    const option = document.createElement('option');
+    option.value = project.id;
+    option.textContent = project.name;
+    option.selected = project.id === state.currentProject?.id;
+    select.appendChild(option);
+  }
+  $('projectCrs').textContent = state.currentProject?.crs || 'EPSG:4326';
+}
+
+async function createProject() {
+  const name = prompt('Tên dự án Field GIS mới:');
+  if (!name?.trim()) return;
+  const now = nowIso();
+  const project = {
+    id: uuid(),
+    name: name.trim(),
+    description: '',
+    crs: 'EPSG:4326',
+    createdAt: now,
+    updatedAt: now,
+  };
+  await dbPut('projects', project);
+  await setSetting('currentProjectId', project.id);
+  state.currentProject = project;
+  await loadProjects();
+  showToast(`Đã tạo dự án “${project.name}”.`);
+}
+
+async function switchProject(id) {
+  state.currentProject = state.projects.find(p => p.id === id) || state.currentProject;
+  await setSetting('currentProjectId', state.currentProject.id);
+  state.selectedFeature = null;
+  renderSelection();
+  await loadCurrentSession();
+  await loadFeatures();
+}
+
+async function loadCurrentSession() {
+  if (!state.currentProject) return;
+  const sessions = (await dbGetAll('sessions'))
+    .filter(s => s.projectId === state.currentProject.id)
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  state.currentSession = sessions.find(s => s.status === 'active') || null;
+  renderSession();
+}
+
+function renderSession() {
+  const session = state.currentSession;
+  $('sessionCard').classList.toggle('empty', !session);
+  $('sessionStateDot').classList.toggle('active', !!session);
+  $('finishSessionBtn').disabled = !session;
+  $('sessionName').textContent = session?.name || 'Chưa bắt đầu';
+  $('sessionMeta').textContent = session
+    ? `${new Date(session.startedAt).toLocaleString('vi-VN')} · ${session.operatorName || 'Người dùng cục bộ'}`
+    : 'Tạo phiên để ghi dữ liệu thực địa';
+  $('sessionBadge').textContent = session ? `● ${session.name}` : 'Chưa có phiên';
+  $('sessionBadge').classList.toggle('muted', !session);
+}
+
+async function startSession(nameOverride = null) {
+  if (!state.currentProject) return null;
+  if (state.currentSession) return state.currentSession;
+  const defaultName = `Phiên ${new Date().toLocaleDateString('vi-VN')}`;
+  const name = nameOverride || prompt('Tên phiên khảo sát:', defaultName);
+  if (!name?.trim()) return null;
+  const session = {
+    id: uuid(),
+    projectId: state.currentProject.id,
+    name: name.trim(),
+    status: 'active',
+    operatorName: 'Local operator',
+    deviceId: navigator.userAgent.slice(0, 120),
+    startedAt: nowIso(),
+    endedAt: null,
+  };
+  await dbPut('sessions', session);
+  state.currentSession = session;
+  renderSession();
+  showToast('Phiên khảo sát đã bắt đầu.');
+  return session;
+}
+
+async function finishSession() {
+  if (!state.currentSession) return;
+  const session = { ...state.currentSession, status: 'completed', endedAt: nowIso() };
+  await dbPut('sessions', session);
+  state.currentSession = null;
+  renderSession();
+  stopDrawing();
+  showToast('Đã kết thúc phiên khảo sát.');
+}
+
+async function loadFeatures() {
+  if (!state.currentProject) return;
+  state.features = (await dbGetAll('features')).filter(
+    f => f.projectId === state.currentProject.id && !f.deletedAt,
+  );
+  refreshMapData();
+  await renderStats();
+}
+
+function asGeoJsonFeature(record) {
+  return {
+    type: 'Feature',
+    id: record.id,
+    geometry: record.geometry,
+    properties: {
+      ...record.properties,
+      _id: record.id,
+      _layerId: record.layerId,
+      _sessionId: record.sessionId,
+      _accuracy: record.accuracy ?? null,
+      _qualityFlag: record.qualityFlag,
+      _syncState: record.syncState,
+      _updatedAt: record.updatedAt,
+    },
+  };
+}
+
+function refreshMapData() {
+  if (!state.map?.getSource('field-data')) return;
+  state.map.getSource('field-d
